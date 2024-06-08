@@ -207,6 +207,15 @@ static void usage(u8 *argv0, int more_help) {
       "                  Note: not precise and can have several more "
       "executions.\n\n"
 
+      "AFLChurn parameters:\n"
+      "Power schedules:\n"
+      "  -q            - anneal or none\n"
+      "  -J integer    - set value of scale_exponent\n"
+      "  -k            - disable ACO byte schedule\n"
+      "  -w            - enable seed schedule\n"
+      "  -H float      - set fitness_exponent\n"
+      "  -K            - increase/decrease mode for ACO\n\n"
+
       "Other stuff:\n"
       "  -M/-S id      - distributed mode (-M sets -Z and disables trimming)\n"
       "                  see docs/fuzzing_in_depth.md#c-using-multiple-cores\n"
@@ -482,9 +491,9 @@ static void fasan_check_afl_preload(char *afl_preload) {
 int main(int argc, char **argv_orig, char **envp) {
 
   s32 opt, auto_sync = 0 /*, user_set_cache = 0*/;
-  u64 prev_queued = 0;
+  u64 prev_queued = 0, prev_queued_alias = 0;
   u32 sync_interval_cnt = 0, seek_to = 0, show_help = 0, default_output = 1,
-      map_size = get_map_size();
+      map_size = get_map_size(), tmp_id;
   u8 *extras_dir[4];
   u8  mem_limit_given = 0, exit_1 = 0, debug = 0,
      extras_dir_cnt = 0 /*, have_p = 0*/;
@@ -547,10 +556,40 @@ int main(int argc, char **argv_orig, char **envp) {
 
   // still available: HjJkKqruvwz
   while ((opt = getopt(argc, argv,
-                       "+a:Ab:B:c:CdDe:E:f:F:g:G:hi:I:l:L:m:M:nNo:Op:P:QRs:S:t:"
-                       "T:UV:WXx:YzZ")) > 0) {
+                       "+a:Ab:B:c:CdDe:E:f:F:g:G:H:hi:I:J:Kkl:L:m:M:nNo:Op:P:Qq:Rs:S:t:"
+                       "T:UV:WwXx:YzZ")) > 0) {
 
     switch (opt) {
+
+      case 'q': /* Power schedule */
+        afl->churn_schedule = ANNEAL;
+        break;
+
+      case 'k':
+        afl->use_byte_fitness = 0;
+        break;
+
+      case 'w':
+        afl->alias_seed_selection = 1;
+        break;
+
+      case 'J':
+        if (sscanf(optarg, "%u", &afl->scale_exponent) < 1) 
+              FATAL("Bad syntax used for -J");
+        break;
+
+      case 'H':
+        if (sscanf(optarg, "%f", &afl->fitness_exponent) < 1) 
+              FATAL("Bad syntax used for -H");
+        break;
+      
+      case 'K':
+        afl->aco_incdec = ACO_INC_DEC;
+        afl->INIT_BYTE_SCORE = 128;
+        afl->MIN_BYTE_SCORE = 118; 
+        afl->MAX_BYTE_SCORE = 138;
+        afl->ACO_GRAV_BIAS = (1 - ACO_COEF) * afl->INIT_BYTE_SCORE;
+        break;
 
       case 'a':
 
@@ -1766,6 +1805,22 @@ int main(int argc, char **argv_orig, char **envp) {
 
   }
 
+  switch (afl->schedule) {
+    case POWER_NONE: OKF ("Using No Schedule From Churn"); break;
+    case ANNEAL: OKF ("Using Annealing-based Power Schedules (ANNEAL)"); break;
+    default: FATAL ("Unknown power schedule");
+  }
+
+  if (afl->use_byte_fitness) OKF ("Using Ant Colony Optimization.");
+  if (afl->alias_seed_selection) OKF("Select next seeds based on churn info.");
+  OKF("scale_exponent is %u", afl->scale_exponent);
+  OKF("fitness_exponent is %f", afl->fitness_exponent);
+  if (afl->aco_incdec == ACO_INC_DEC){
+    OKF("ACO score - increase and decrease.");
+  } else{
+    OKF("ACO score - increase only");
+  }
+
   // Marker: ADD_TO_INJECTIONS
   if (getenv("AFL_LLVM_INJECTIONS_ALL") || getenv("AFL_LLVM_INJECTIONS_SQL") ||
       getenv("AFL_LLVM_INJECTIONS_LDAP") || getenv("AFL_LLVM_INJECTIONS_XSS")) {
@@ -2846,7 +2901,9 @@ int main(int argc, char **argv_orig, char **envp) {
             // table
             prev_queued_items = afl->queued_items;
             create_alias_table(afl);
-
+            if (likely(afl->alias_seed_selection)){
+              create_seed_alias_table(afl);
+            }
           }
 
           do {
@@ -2860,8 +2917,7 @@ int main(int argc, char **argv_orig, char **envp) {
         }
 
       }
-
-      skipped_fuzz = fuzz_one(afl);
+      skipped_fuzz = fuzz_one_original(afl);
   #ifdef INTROSPECTION
       ++afl->queue_cur->stats_selected;
 
@@ -2903,6 +2959,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
         while (++afl->current_entry < afl->queued_items &&
                afl->queue_buf[afl->current_entry]->disabled) {};
+
         if (unlikely(afl->current_entry >= afl->queued_items ||
                      afl->queue_buf[afl->current_entry] == NULL ||
                      afl->queue_buf[afl->current_entry]->disabled)) {
@@ -3071,6 +3128,7 @@ stop_fuzzing:
   destroy_queue(afl);
   destroy_extras(afl);
   destroy_custom_mutators(afl);
+  destroy_alias_buf(afl);
   afl_shm_deinit(&afl->shm);
 
   if (afl->shm_fuzz) {

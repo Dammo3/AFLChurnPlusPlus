@@ -3441,19 +3441,7 @@ static void edit_params(aflcc_state_t *aflcc, u32 argc, char **argv,
 
     } else {
 
-      if (aflcc->instrument_mode == INSTRUMENT_PCGUARD) {
-
-        add_optimized_pcguard(aflcc);
-
-      } else if (aflcc->instrument_mode == INSTRUMENT_LLVMNATIVE) {
-
-        add_native_pcguard(aflcc);
-
-      } else {
-
-        load_llvm_pass(aflcc, "afl-llvm-pass.so");
-
-      }
+      load_llvm_pass(aflcc, "afl-llvm-pass.so");
 
     }
 

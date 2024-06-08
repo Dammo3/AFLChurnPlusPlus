@@ -874,7 +874,7 @@ void show_stats_normal(afl_state_t *afl) {
 
     } else {
 
-      fuzzer_name = "american fuzzy lop";
+      fuzzer_name = "AFLChurn++";
       if (banner_len + strlen(fuzzer_name) + strlen(afl->use_banner) > 75) {
 
         fuzzer_name = "AFL";
@@ -1147,6 +1147,8 @@ void show_stats_normal(afl_state_t *afl) {
           (afl->saved_tmouts >= KEEP_UNIQUE_HANG) ? "+" : "");
 
   SAYF(bSTG bV bSTOP "  total tmouts : " cRST "%-20s" bSTG bV "\n", tmp);
+
+
 
   /* Aaaalmost there... hold on! */
 

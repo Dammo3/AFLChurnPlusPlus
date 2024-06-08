@@ -102,7 +102,7 @@ extern ssize_t _kern_write(int fd, off_t pos, const void *buffer,
 
 char *strcasestr(const char *haystack, const char *needle);
 
-static u8  __afl_area_initial[MAP_INITIAL_SIZE];
+static u8  __afl_area_initial[MAP_INITIAL_SIZE + WEIGHT_SHM];
 static u8 *__afl_area_ptr_dummy = __afl_area_initial;
 static u8 *__afl_area_ptr_backup = __afl_area_initial;
 
@@ -1096,7 +1096,7 @@ int __afl_persistent_loop(unsigned int max_cnt) {
        iteration, it's our job to erase any trace of whatever happened
        before the loop. */
 
-    memset(__afl_area_ptr, 0, __afl_map_size);
+    memset(__afl_area_ptr, 0, __afl_map_size + WEIGHT_SHM);
     __afl_area_ptr[0] = 1;
     memset(__afl_prev_loc, 0, NGRAM_SIZE_MAX * sizeof(PREV_LOC_T));
 

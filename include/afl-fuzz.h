@@ -76,6 +76,8 @@
 #include <sys/file.h>
 #include <sys/types.h>
 
+#include <math.h>
+
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
     defined(__NetBSD__) || defined(__DragonFly__)
   #include <sys/sysctl.h>
@@ -204,6 +206,7 @@ struct queue_entry {
   u8 *fname;                            /* File name for the test case      */
   u32 len;                              /* Input length                     */
   u32 id;                               /* entry number in queue_buf        */
+  u32 align_len;                        /* for ACO; extemd input length to 4-bytes data */
 
   u8 colorized,                         /* Do not run redqueen stage again  */
       cal_failed;                       /* Calibration failed?              */
@@ -219,6 +222,7 @@ struct queue_entry {
       disabled;                         /* Is disabled from fuzz selection  */
 
   u32 bitmap_size,                      /* Number of bits set in bitmap     */
+      times_selected,                   /* Times selected to be mutated     */
 #ifdef INTROSPECTION
       stats_selected,                   /* stats: how often selected        */
       stats_skipped,                    /* stats: how often skipped         */
@@ -236,8 +240,17 @@ struct queue_entry {
       custom,                           /* Marker for custom mutators       */
       stats_mutated;                    /* stats: # of mutations performed  */
 
+  double raw_fitness,                   /* Non-normalised fitness of the seed as it is returned */
+         alias_score,                   /* Used to calculate probability of choosing this seed */
+         seed_weight;                        /* The fitness of the seed normalized between min and max raw fitness */
+
+  u8 *byte_score;                       /* Possibility to mutate a certain byte, initial is INIT_BYTE_SCORE */
+
   u8 *trace_mini;                       /* Trace bytes, if kept             */
   u32 tc_ref;                           /* Trace bytes ref count            */
+
+  u32 *alias_table;                   /* table for byte selection (ACO) */
+  double *alias_prob;                 /* probability for bytes (ACO) */
 
 #ifdef INTROSPECTION
   u32 bitsmap_size;
@@ -486,6 +499,48 @@ struct foreign_sync {
 
 typedef struct afl_state {
 
+  /********************    AFLChurn Variables    *********************/
+  u8 churn_schedule;
+  enum{
+    /* 00 */ POWER_NONE,
+    /* 01 */ ANNEAL                 /* default */
+  };
+
+  u32 aco_max_seed_len;
+
+  double max_raw_fitness,           /* max path churn among all seeds */
+          min_raw_fitness;          /* minimun path churn among all seeds */
+
+  size_t calibrated_paths;          /* aggregate count */
+
+  double show_factor;
+
+  u8 use_byte_fitness;              /* use byte score to select bytes; default: use */
+  u8 aco_incdec;                    /* only increase score or increase/decrease */
+  u8 INIT_BYTE_SCORE, 
+      MIN_BYTE_SCORE, 
+      MAX_BYTE_SCORE;
+  u8 ACO_GRAV_BIAS;
+
+  u32 scale_exponent;
+  float fitness_exponent;
+
+  u32* seed_alias_table;            /* alias method: alias table  */
+  double* seed_alias_probability;   /* alias probability of a seed */
+  u8 *seed_prob_norm_buf,           /* normed probability of seeds */
+      *seed_out_scratch_buf,        /* kicked out of analysis queue during creating alias table */
+      *seed_in_scratch_buf,         /* kept in analysis queue during creating alias table */
+      *byte_prob_norm_buf,          /* For ACO; normed probability of seeds */
+      *byte_out_scratch_buf,        /* For ACO; kicked out of analysis queue during creating alias table */
+      *byte_in_scratch_buf;         /* For ACO */
+
+  u8 alias_seed_selection;          /* Use alias method to select next seed based on burst */
+
+  double total_log_bitmap_size;     /* Total value of log(bitmap_size) */
+
+
+  /********************    AFL Variables    *********************/
+
   /* Position of this state in the global states list */
   u32 _id;
 
@@ -637,6 +692,7 @@ typedef struct afl_state {
       saved_tmouts,                     /* Timeouts with unique signatures  */
       saved_hangs,                      /* Hangs with unique signatures     */
       last_crash_execs,                 /* Exec counter at last crash       */
+      total_aco_updates,                /* Total ACO score updates          */
       queue_cycle,                      /* Queue round counter              */
       cycles_wo_finds,                  /* Cycles without any new paths     */
       trim_execs,                       /* Execs done to trim input files   */
@@ -1166,6 +1222,17 @@ void        deinit_py(void *);
 
 /* Queue */
 
+double get_raw_fitness_of_executed_input(afl_state_t *);
+double normalize_fitness(afl_state_t *, double );
+void update_seed_fitness (afl_state_t *);
+void cal_init_seed_byte_score(afl_state_t *, s32, s32);
+void expire_old_score(afl_state_t *);
+void update_fitness_in_havoc(afl_state_t *, u8*, u8*, u32);
+void create_byte_alias_table(afl_state_t *);
+u32 URfitness(afl_state_t *, s32);
+void destroy_alias_buf(afl_state_t *);
+void create_seed_alias_table(afl_state_t *);
+
 void mark_as_det_done(afl_state_t *, struct queue_entry *);
 void mark_as_variable(afl_state_t *, struct queue_entry *);
 void mark_as_redundant(afl_state_t *, struct queue_entry *, u8);
@@ -1252,6 +1319,8 @@ void pso_updating(afl_state_t *);
 u8   fuzz_one(afl_state_t *);
 
 /* Init */
+
+void plot_byte_score(afl_state_t *);
 
 #ifdef HAVE_AFFINITY
 void bind_to_free_cpu(afl_state_t *);

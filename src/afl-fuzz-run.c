@@ -408,6 +408,7 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
   s32 old_sc = afl->stage_cur, old_sm = afl->stage_max;
   u32 use_tmout = afl->fsrv.exec_tmout;
   u8 *old_sn = afl->stage_name;
+  u8 re_cal_seed_fitness = 0;
 
   u64 calibration_start_us = get_cur_time_us();
   if (unlikely(afl->shm.cmplog_mode)) { q->exec_cksum = 0; }
@@ -611,11 +612,33 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
   q->bitmap_size = count_bytes(afl, afl->fsrv.trace_bits);
   q->handicap = handicap;
   q->cal_failed = 0;
+  q->raw_fitness = get_raw_fitness_of_executed_input(afl);
+
+  // anneal: update max and min path weight for all seeds
+  if (afl->calibrated_paths == 0){
+    afl->max_raw_fitness = afl->min_raw_fitness = q->raw_fitness;
+  }
+
+  if (afl->max_raw_fitness < q->raw_fitness){
+    afl->max_raw_fitness = q->raw_fitness;
+    re_cal_seed_fitness = 1;
+  }
+
+  if (afl->min_raw_fitness > q->raw_fitness) {
+    afl->min_raw_fitness = q->raw_fitness;
+    re_cal_seed_fitness = 1;
+  }
+
+  afl->calibrated_paths++;
 
   afl->total_bitmap_size += q->bitmap_size;
+  afl->total_log_bitmap_size += log(q->bitmap_size);
   ++afl->total_bitmap_entries;
 
   update_bitmap_score(afl, q);
+
+  if (re_cal_seed_fitness) update_seed_fitness(afl);
+  else q->seed_weight = normalize_fitness(afl, q->raw_fitness);
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user

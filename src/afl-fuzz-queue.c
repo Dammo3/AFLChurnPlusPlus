@@ -43,6 +43,387 @@ void run_afl_custom_queue_new_entry(afl_state_t *afl, struct queue_entry *q,
 
 #endif
 
+
+/* Get values of churn info from instrumentation  */
+double get_raw_fitness_of_executed_input(afl_state_t *afl){
+  double inst_raw_fitness = 0.0;
+
+  double *sum_raw_fitness = (double *)(afl->fsrv.trace_bits + afl->fsrv.map_size);
+
+#ifdef WORD_SIZE_64
+  u64 *count_raw_fitness = (u64 *)(afl->fsrv.trace_bits + afl->fsrv.map_size + 8);
+
+#else
+  u32 *count_raw_fitness = (u32 *)(afl->fsrv.trace_bits + afl->fsrv.map_size + 8);
+
+#endif
+
+  if ((*count_raw_fitness) != 0){ 
+    inst_raw_fitness = (*sum_raw_fitness) / (*count_raw_fitness);
+  }
+
+  return inst_raw_fitness;
+}
+
+/* Fitness factor for age/churn infomation */
+double normalize_fitness(afl_state_t *afl, double cur_raw_fitness){
+  double normalized_fitness = 0.0;
+
+  if (afl->max_raw_fitness == afl->min_raw_fitness){
+    normalized_fitness = 1;
+  } else {
+    // maximize
+    normalized_fitness = (cur_raw_fitness - afl->min_raw_fitness) / (afl->max_raw_fitness - afl->min_raw_fitness);  
+  }
+
+  return normalized_fitness;
+}
+
+void update_seed_fitness (afl_state_t *afl){
+  u32 i;
+  for (i = 0; i < afl->queued_items; i++) {
+    if (afl->queue_buf[i]->cal_failed)
+      afl->queue_buf[i]->seed_weight = normalize_fitness(afl, afl->queue_buf[i]->raw_fitness);
+  }
+}
+
+/* update byte score for group of 4 bytes at the same time */
+static inline void update_byte_score_havoc(afl_state_t *afl, double cur_fitness, u32* one_group_byte_score){
+  struct queue_entry *q = afl->queue;
+  double delt = 0.0000001;  // float value is approximate
+
+  if (cur_fitness > q->seed_weight + delt){ // larger burst gets higher score
+    if (*one_group_byte_score != 0xffffffff) // don't overflow
+      *one_group_byte_score += 0x01010101; // each byte adds one
+  } else if(afl->aco_incdec == ACO_INC_DEC && cur_fitness + delt < q->seed_weight){
+    if (*one_group_byte_score != 0) // don't underflow
+        *one_group_byte_score -= 0x01010101; // each byte subtracts one
+  }
+}
+
+/* update byte score for group of 4 bytes at the same time */
+static inline void update_byte_score_deterministic(afl_state_t *afl, double cur_fitness, s32 start_pos, s32 end_pos){
+  struct queue_entry *q = afl->queue;
+  u32* group_byte_score = (u32*) q->byte_score;
+  s32 group_start_pos = start_pos / ACO_GROUP_SIZE;
+  s32 group_end_pos = end_pos / ACO_GROUP_SIZE;
+  u32 group_max_pos = q->align_len / ACO_GROUP_SIZE;
+
+  if (group_start_pos == group_end_pos){
+    if (group_start_pos < group_max_pos)
+        update_byte_score_havoc(q, cur_fitness, group_byte_score + group_start_pos);
+  } else {
+    if (group_start_pos < group_max_pos)
+        update_byte_score_havoc(q, cur_fitness, group_byte_score + group_start_pos);
+    if (group_end_pos < group_max_pos)
+        update_byte_score_havoc(q, cur_fitness, group_byte_score + group_end_pos);
+  }
+}
+
+/* For deterministic stage. In deterministic stage, 
+      the scores will not gravitate to zero.
+  Calculate only when the lengths of an input and its seed equal.
+      [0 =< byte_end_pos - byte_start_pos < 4] */
+void cal_init_seed_byte_score(afl_state_t *afl, s32 byte_start_pos, s32 byte_end_pos){
+  struct queue_entry *q = afl->queue;
+  double cur_raw_fitness, cur_fitness;
+
+  if (!q->byte_score) return;
+
+  cur_raw_fitness = get_raw_fitness_of_executed_input(afl);
+
+  cur_fitness = normalize_fitness(afl, cur_raw_fitness);
+  update_byte_score_deterministic(afl, cur_fitness, byte_start_pos, byte_end_pos);
+  afl->total_aco_updates++;
+}
+
+/* expire old scores */
+void expire_old_score(afl_state_t *afl){
+  struct queue_entry *q = afl->queue;
+
+  if (!rand_below(afl, q->len)){
+    if (q->byte_score){
+      for (int i = 0; i < q->align_len; i++){
+        /* gravitate to INIT_BYTE_SCORE */
+        // just drop the fractional part
+        if (q->byte_score[i] > afl->MIN_BYTE_SCORE && q->byte_score[i] < afl->INIT_BYTE_SCORE){
+          q->byte_score[i]++;
+        } else if (q->byte_score[i] > afl->INIT_BYTE_SCORE && q->byte_score[i] < afl->MAX_BYTE_SCORE){
+          q->byte_score[i]--;
+        } else {
+          // values in [MIN_BYTE_SCORE, MAX_BYTE_SCORE] will not change using this calculation
+          q->byte_score[i] = q->byte_score[i] * ACO_COEF + afl->ACO_GRAV_BIAS;
+        }
+        
+      }
+    }
+  }
+}
+
+
+/* Locate the bytes that are changed in this mutation;
+    then update the score for these bytes; */
+void update_fitness_in_havoc(afl_state_t *afl, u8* seed_mem, u8* cur_input_mem, u32 cur_input_len){
+  struct queue_entry *q = afl->queue;
+
+  if (q->len != cur_input_len) return;
+  
+  double cur_raw_fitness, cur_fitness;
+
+  /* if one byte in a group with the size group_size changes the fitness,
+      other bytes in the group have the same change. 
+   */
+  u32 i = q->align_len / ACO_GROUP_SIZE;
+  u32* group_seed = ((u32*)seed_mem);
+  u32* group_cur_input = ((u32*)cur_input_mem);
+  u32* group_byte_score = (u32*)(q->byte_score);
+
+  cur_raw_fitness = get_raw_fitness_of_executed_input(afl);
+
+  cur_fitness = normalize_fitness(afl, cur_raw_fitness);
+
+  while(i--){
+    if ((*(group_seed++)) != (*(group_cur_input++))){
+      update_byte_score_havoc(afl, cur_fitness, group_byte_score);
+    }
+    group_byte_score++;
+  }
+
+  afl->total_aco_updates++;
+
+}
+
+
+/* 
+Select one byte to be mutated based no churn values by using ACO.
+Prerequisite: q->len == cur_input_len
+ */
+static inline u32 select_one_byte(afl_state_t *afl, u32 cur_input_len){
+  struct queue_entry *q = afl->queue;
+  // randomly select an aliased seed
+  u32 s = rand_below(afl, cur_input_len);
+  // generate the next percent
+  double p = (double)rand_below(afl, 0xFFFFFFFF)/0xFFFFFFFE;
+  return (p < q->alias_prob[s] ? s : q->alias_table[s]);
+}
+
+void create_byte_alias_table(afl_state_t *afl){
+  struct queue_entry *q = afl->queue;
+
+  u32 n = q->len, i = 0, a, g;
+
+  if (!afl->byte_prob_norm_buf) {
+    afl->byte_prob_norm_buf = (u8 *)ck_alloc(n * sizeof(double));
+    afl->byte_out_scratch_buf = (u8 *)ck_alloc(n * sizeof(int));
+    afl->byte_in_scratch_buf = (u8 *)ck_alloc(n * sizeof(int));
+    afl->aco_max_seed_len = n;
+  } else if (afl->aco_max_seed_len < n){
+    afl->byte_prob_norm_buf = (u8 *)ck_realloc((void *)afl->byte_prob_norm_buf, n * sizeof(double));
+    afl->byte_out_scratch_buf = (u8 *)ck_realloc((void *)afl->byte_out_scratch_buf, n * sizeof(int));
+    afl->byte_in_scratch_buf = (u8 *)ck_realloc((void *)afl->byte_in_scratch_buf, n * sizeof(int));
+    afl->aco_max_seed_len = n;
+  }
+
+  double *P = (double *)afl->byte_prob_norm_buf;
+  int *   S = (int *)afl->byte_out_scratch_buf;
+  int *   L = (int *)afl->byte_in_scratch_buf;
+
+  if (!P || !S || !L) { FATAL("could not aquire memory for alias table"); }
+  memset(q->alias_table, 0, n * sizeof(u32));
+  memset(q->alias_prob, 0, n * sizeof(double));
+
+  u32 sum = 0;
+
+  for (i = 0; i < n; i++){
+    sum += q->byte_score[i];
+  }
+
+  if (sum == 0){
+    for (i=0; i< n; i++){
+      q->alias_prob[i] = 1.0;
+    }
+    return;
+  }
+
+  for (i = 0; i < n; i++){
+    P[i] = (double)(q->byte_score[i] * n) / sum;
+  }
+
+  int nS = 0, nL = 0, s;
+  for (s = (s32)n - 1; s >= 0; --s) {
+    if (P[s] < 1) {
+      S[nS++] = s;
+    } else {
+      L[nL++] = s;
+    }
+  }
+
+  while (nS && nL) {
+    a = S[--nS];
+    g = L[--nL];
+    q->alias_prob[a] = P[a];
+    q->alias_table[a] = g;
+    P[g] = P[g] + P[a] - 1;
+    if (P[g] < 1) {
+      S[nS++] = g;
+    } else {
+      L[nL++] = g;
+    }
+  }
+
+  while (nL)
+    q->alias_prob[L[--nL]] = 1;
+
+  while (nS)
+    q->alias_prob[S[--nS]] = 1;
+}
+
+/* select a way to choose mutated bytes */
+u32 URfitness(afl_state_t *afl, s32 input_len){
+  struct queue_entry *q = afl->queue;
+  if (afl->use_byte_fitness && (q->len == input_len)) {
+    return select_one_byte(q, input_len);
+  } else{
+    return rand_below(afl, input_len);
+  }
+}
+
+/* aflchurn alias method. Similar as afl++:
+*/
+void destroy_alias_buf(afl_state_t *afl){
+  ck_free(afl->seed_prob_norm_buf);
+  ck_free(afl->seed_out_scratch_buf);
+  ck_free(afl->seed_in_scratch_buf);
+
+  ck_free(afl->seed_alias_table);
+  ck_free(afl->seed_alias_probability);
+
+  ck_free(afl->byte_prob_norm_buf);
+  ck_free(afl->byte_out_scratch_buf);
+  ck_free(afl->byte_in_scratch_buf);
+
+}
+/* select next queue entry based on alias probability of churns
+ ID range: 0 ~ queued_paths -1
+ 
+inline u32 select_next_queue_entry(afl_state_t *afl){
+  // randomly select an aliased seed
+  u32 s = rand_below(afl, afl->queued_items);
+  // generate the next percent
+  double p = (double)rand_below(afl, 0xFFFFFFFF)/0xFFFFFFFE;
+  return (p < afl->seed_alias_probability[s] ? s : afl->seed_alias_table[s]);
+}*/
+
+void create_seed_alias_table(afl_state_t *afl){
+
+  u32 n = afl->queued_items, i = 0, a, g;
+
+  if (!afl->seed_alias_table){
+    afl->seed_alias_table = (u32 *)ck_alloc(n * sizeof(u32));
+    afl->seed_alias_probability = (double *)ck_alloc(n * sizeof(double));
+
+    afl->seed_prob_norm_buf = (u8 *)ck_alloc(n * sizeof(double));
+    afl->seed_out_scratch_buf = (u8 *)ck_alloc(n * sizeof(int));
+    afl->seed_in_scratch_buf = (u8 *)ck_alloc(n * sizeof(int));
+  } else{
+    afl->seed_alias_table = (u32 *)ck_realloc((void *)afl->seed_alias_table, n * sizeof(u32));
+    afl->seed_alias_probability = (double *)ck_realloc((void *)afl->seed_alias_probability, n * sizeof(double));
+
+    afl->seed_prob_norm_buf = (u8 *)ck_realloc((void *)afl->seed_prob_norm_buf, n * sizeof(double));
+    afl->seed_out_scratch_buf = (u8 *)ck_realloc((void *)afl->seed_out_scratch_buf, n * sizeof(int));
+    afl->seed_in_scratch_buf = (u8 *)ck_realloc((void *)afl->seed_in_scratch_buf, n * sizeof(int));
+  }
+
+  double *P = (double *)afl->seed_prob_norm_buf;
+  int *   S = (int *)afl->seed_out_scratch_buf;
+  int *   L = (int *)afl->seed_in_scratch_buf;
+
+  if (!P || !S || !L) { FATAL("could not aquire memory for alias table"); }
+  memset((void *)afl->seed_alias_table, 0, n * sizeof(u32));
+  memset((void *)afl->seed_alias_probability, 0, n * sizeof(double));
+
+  double sum = 0;
+  // smaller execution time indicates larger score
+  u32 avg_exec_us = afl->total_cal_us / afl->total_cal_cycles;
+  u32 avg_log_bitmap_size = afl->total_log_bitmap_size / afl->total_bitmap_entries;
+  
+
+  double rela_time, rela_log_bitmap;
+
+  struct queue_entry *q;
+  for (i = 0; i < n; i++) {
+    q = afl->queue_buf[i];
+
+    /* Calculate alias score */
+    if (q->cal_failed){
+      q->alias_score = 0;
+
+    } else {
+      rela_time = (double)avg_exec_us / q->exec_us;
+      rela_log_bitmap = (double)log(q->bitmap_size) / avg_log_bitmap_size;
+      q->alias_score = q->seed_weight * rela_time * rela_log_bitmap;
+
+    }
+
+    sum += q->alias_score;
+  }
+
+  if (sum == 0) {
+    for (i=0; i<n; i++){
+      afl->seed_alias_probability[i] = 1.0;
+    }
+    return;
+  }
+
+  for (i = 0; i < n; i++) {
+    q = afl->queue_buf[i];
+    P[i] = (q->alias_score * n) / sum;
+  }
+
+  int nS = 0, nL = 0, s;
+  for (s = (s32)n - 1; s >= 0; --s) {
+
+    if (P[s] < 1) {
+
+      S[nS++] = s;
+
+    } else {
+
+      L[nL++] = s;
+
+    }
+
+  }
+
+  while (nS && nL) {
+
+    a = S[--nS];
+    g = L[--nL];
+    afl->seed_alias_probability[a] = P[a];
+    afl->seed_alias_table[a] = g;
+    P[g] = P[g] + P[a] - 1;
+    if (P[g] < 1) {
+
+      S[nS++] = g;
+
+    } else {
+
+      L[nL++] = g;
+
+    }
+
+  }
+
+  while (nL)
+    afl->seed_alias_probability[L[--nL]] = 1;
+
+  while (nS)
+    afl->seed_alias_probability[S[--nS]] = 1;
+
+
+}
+
+
 /* select next queue entry based on alias algo - fast! */
 
 inline u32 select_next_queue_entry(afl_state_t *afl) {
@@ -596,6 +977,16 @@ void add_to_queue(afl_state_t *afl, u8 *fname, u32 len, u8 passed_det) {
   q->trace_mini = NULL;
   q->testcase_buf = NULL;
   q->mother = afl->queue_cur;
+  q->times_selected = 0;
+  q->raw_fitness  = 0.0;
+  q->alias_score = 0.0;
+  q->seed_weight = 0.0;
+
+  // for ACO byte score, extend to ACO_GROUP_SIZE * N
+  if (q->len % ACO_GROUP_SIZE)
+    q->align_len = q->len - q->len % ACO_GROUP_SIZE + ACO_GROUP_SIZE;
+  else
+    q->align_len = q->len;
 
 #ifdef INTROSPECTION
   q->bitsmap_size = afl->bitsmap_size;
@@ -681,6 +1072,9 @@ void destroy_queue(afl_state_t *afl) {
     q = afl->queue_buf[i];
     ck_free(q->fname);
     ck_free(q->trace_mini);
+    ck_free(q->byte_score);
+    ck_free(q->alias_table);
+    ck_free(q->alias_prob);
     if (q->skipdet_e) {
 
       if (q->skipdet_e->done_inf_map) ck_free(q->skipdet_e->done_inf_map);
@@ -913,6 +1307,10 @@ u32 calculate_score(afl_state_t *afl, struct queue_entry *q) {
   u32 avg_exec_us = afl->total_cal_us / cal_cycles;
   u32 avg_bitmap_size = afl->total_bitmap_size / bitmap_entries;
   u32 perf_score = 100;
+
+  double energy_factor = 0, energy_exponent;
+  
+  q->times_selected ++;
 
   /* Adjust score based on execution speed of this path, compared to the
      global average. Multiplier ranges from 0.1x to 3x. Fast inputs are
@@ -1179,6 +1577,22 @@ u32 calculate_score(afl_state_t *afl, struct queue_entry *q) {
     perf_score = 1;
 
   }
+
+  switch (afl->churn_schedule){
+    if (afl->max_raw_fitness == afl->min_raw_fitness) energy_factor = 1;
+      else {
+        energy_exponent = q->seed_weight * (1 - pow(afl->fitness_exponent, q->times_selected)) 
+                                  + 0.5 * pow(afl->fitness_exponent, q->times_selected);
+        energy_factor = pow(2, afl->scale_exponent * (2 * energy_exponent - 1));
+      }
+
+  }
+
+  if (energy_factor == 0) energy_factor = 1;
+
+  afl->show_factor = energy_factor;
+
+  perf_score *= energy_factor;
 
   /* Make sure that we don't go over limit. */
 
