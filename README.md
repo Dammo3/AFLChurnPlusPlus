@@ -1,15 +1,21 @@
 # AFL Churn plus plus (AFLChurn++)
 
-<img align="right" src="https://raw.githubusercontent.com/AFLplusplus/Website/main/static/aflpp_bg.svg" alt="AFL++ logo" width="250" heigh="250">
+AFLChurn++ is a implementation of AFLChurn on AFL++ rather than AFL.
 
-Release version: [4.20c](https://github.com/AFLplusplus/AFLplusplus/releases)
+## AFLChurn Details
 
-GitHub version: 4.21a
+[AFLChurn](https://github.com/aflchurn/aflchurn) is a regression greybox fuzzer that focusses on code that is changed more recently or more frequently.
+
+AFLChurn was originally developed based on [American Fuzzy Lop (AFL)](https://github.com/google/AFL) which was originally developed by Michal Zalewski.
+
+## AFLplusplus Details
+
+AFLplusplus Release version: [4.20c](https://github.com/AFLplusplus/AFLplusplus/releases)
+
+AFLplusplus GitHub version: 4.21a
 
 AFLplusplus Repository:
 [https://github.com/AFLplusplus/AFLplusplus](https://github.com/AFLplusplus/AFLplusplus)
-
-Originally developed by Michal "lcamtuf" Zalewski.
 
 AFL++ is a superior fork to Google's AFL - more speed, more and better
 mutations, more and better instrumentation, custom module support, etc.
