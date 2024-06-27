@@ -470,6 +470,43 @@
   #define MAP_INITIAL_SIZE MAP_SIZE
 #endif
 
+
+/* ACO: update frequency and coefficient */
+
+#define ACO_FREQENCY       30
+#define ACO_COEF           0.9
+#define ACO_GROUP_SIZE     4
+
+enum{
+   CHURN_LOG_CHANGE,
+   CHURN_CHANGE,
+   CHURN_CHANGE2
+};
+
+enum{
+   ACO_INC_ONLY,
+   ACO_INC_DEC
+};
+
+
+/* Shared memory for Path weight. 
+8 bytes for weight (double); 8 for count (integer).
+ */
+#define WEIGHT_SHM         16
+
+/* Threshold of ages and changes */
+// Always instrument a BB if its age is less than days
+#define THRESHOLD_DAYS     200
+#define THRESHOLD_RANKS    200
+#define THRESHOLD_CHANGES    10
+// Always instrument a BB if its #changes is larger than a percentage (%)
+#define THRESHOLD_PERCENT_CHANGES   10
+
+/* Ratio (%) to select a BB to insert age/churn */
+#define CHURN_INSERT_RATIO    30
+
+#define WRONG_VALUE     0
+
 /* Maximum allocator request size (keep well under INT_MAX): */
 
 #define MAX_ALLOC 0x40000000
