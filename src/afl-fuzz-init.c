@@ -2336,6 +2336,36 @@ void setup_dirs_fds(afl_state_t *afl) {
 
 }
 
+void plot_byte_score(afl_state_t *afl){
+  u8* tmp;
+  s32 fd;
+  FILE* byte_file;
+  struct queue_entry *q = afl->queue, *n;
+
+  tmp = alloc_printf("%s/byte_score", afl->out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  byte_file = fdopen(fd, "w");
+  if (!byte_file) PFATAL("fdopen() failed");
+
+  while (q) {
+
+    n = afl->queue_top;
+    if (q->byte_score){
+      for (int i=0; i< q->len; i++){
+          fprintf(byte_file, "%d, ", q->byte_score[i]);
+        }
+      fprintf(byte_file, "\n");
+    }
+    q = n;
+  }
+
+  fclose(byte_file);
+  
+}
+
 void setup_cmdline_file(afl_state_t *afl, char **argv) {
 
   u8 *tmp;
