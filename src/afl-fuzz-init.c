@@ -1413,6 +1413,8 @@ void perform_dry_run(afl_state_t *afl) {
 
   }
 
+  OKF("Initial Churn Raw Fitness is: %.6f.", (afl->max_raw_fitness + afl->min_raw_fitness)/2);
+
   OKF("All test cases processed.");
 
 }

@@ -48,13 +48,13 @@ void run_afl_custom_queue_new_entry(afl_state_t *afl, struct queue_entry *q,
 double get_raw_fitness_of_executed_input(afl_state_t *afl){
   double inst_raw_fitness = 0.0;
 
-  double *sum_raw_fitness = (double *)(trace_bits + MAP_SIZE);
+  double *sum_raw_fitness = (double *)(afl->fsrv.trace_bits + MAP_SIZE);
 
 #ifdef WORD_SIZE_64
-  u64 *count_raw_fitness = (u64 *)(trace_bits + MAP_SIZE + 8);
+  u64 *count_raw_fitness = (u64 *)(afl->fsrv.trace_bits + MAP_SIZE + 8);
 
 #else
-  u32 *count_raw_fitness = (u32 *)(trace_bits + MAP_SIZE + 8);
+  u32 *count_raw_fitness = (u32 *)(afl->fsrv.trace_bits + MAP_SIZE + 8);
 
 #endif
 
@@ -80,12 +80,10 @@ double normalize_fitness(afl_state_t *afl, double cur_raw_fitness){
 }
 
 void update_seed_fitness (afl_state_t *afl){
-  struct queue_entry *q = afl->queue;
-  while (q){
-    if (!q->cal_failed)
-      q->weight = normalize_fitness(afl, q->raw_fitness);
-    
-    q = afl->queue_top;
+  u32 i;
+  for (i = 0; i < afl->queued_items; i++) {
+    if (afl->queue_buf[i]->cal_failed)
+      afl->queue_buf[i]->seed_weight = normalize_fitness(afl, afl->queue_buf[i]->raw_fitness);
   }
 }
 
@@ -94,10 +92,10 @@ static inline void update_byte_score_havoc(afl_state_t *afl, double cur_fitness,
   struct queue_entry *q = afl->queue;
   double delt = 0.0000001;  // float value is approximate
 
-  if (cur_fitness > q->weight + delt){ // larger burst gets higher score
+  if (cur_fitness > q->seed_weight + delt){ // larger burst gets higher score
     if (*one_group_byte_score != 0xffffffff) // don't overflow
       *one_group_byte_score += 0x01010101; // each byte adds one
-  } else if(afl->aco_incdec == ACO_INC_DEC && cur_fitness + delt < q->weight){
+  } else if(afl->aco_incdec == ACO_INC_DEC && cur_fitness + delt < q->seed_weight){
     if (*one_group_byte_score != 0) // don't underflow
         *one_group_byte_score -= 0x01010101; // each byte subtracts one
   }
@@ -308,14 +306,14 @@ void destroy_alias_buf(afl_state_t *afl){
 }
 /* select next queue entry based on alias probability of churns
  ID range: 0 ~ queued_paths -1
- */
-static inline u32 select_next_queue_entry(afl_state_t *afl){
+ 
+inline u32 select_next_queue_entry(afl_state_t *afl){
   // randomly select an aliased seed
   u32 s = rand_below(afl, afl->queued_items);
   // generate the next percent
   double p = (double)rand_below(afl, 0xFFFFFFFF)/0xFFFFFFFE;
   return (p < afl->seed_alias_probability[s] ? s : afl->seed_alias_table[s]);
-}
+}*/
 
 void create_seed_alias_table(afl_state_t *afl){
 
@@ -353,9 +351,10 @@ void create_seed_alias_table(afl_state_t *afl){
 
   double rela_time, rela_log_bitmap;
 
-  struct queue_entry *q = afl->queue;
+  struct queue_entry *q;
   for (i = 0; i < n; i++) {
-    
+    q = afl->queue_buf[i];
+
     /* Calculate alias score */
     if (q->cal_failed){
       q->alias_score = 0;
@@ -363,13 +362,11 @@ void create_seed_alias_table(afl_state_t *afl){
     } else {
       rela_time = (double)avg_exec_us / q->exec_us;
       rela_log_bitmap = (double)log(q->bitmap_size) / avg_log_bitmap_size;
-      q->alias_score = q->weight * rela_time * rela_log_bitmap;
+      q->alias_score = q->seed_weight * rela_time * rela_log_bitmap;
 
     }
 
     sum += q->alias_score;
-    q = afl->queue_top;
-
   }
 
   if (sum == 0) {
@@ -379,10 +376,9 @@ void create_seed_alias_table(afl_state_t *afl){
     return;
   }
 
-  q = afl->queue;
   for (i = 0; i < n; i++) {
+    q = afl->queue_buf[i];
     P[i] = (q->alias_score * n) / sum;
-    q = afl->queue_top;
   }
 
   int nS = 0, nL = 0, s;
@@ -985,7 +981,7 @@ void add_to_queue(afl_state_t *afl, u8 *fname, u32 len, u8 passed_det) {
   q->times_selected = 0;
   q->raw_fitness  = 0.0;
   q->alias_score = 0.0;
-  q->weight = 0.0;
+  q->seed_weight = 0.0;
 
   // for ACO byte score, extend to ACO_GROUP_SIZE * N
   if (q->len % ACO_GROUP_SIZE)
@@ -1583,7 +1579,7 @@ u32 calculate_score(afl_state_t *afl, struct queue_entry *q) {
 
   }
 
-    switch (afl->churn_schedule){
+  switch (afl->churn_schedule){
     case POWER_NONE:
       energy_factor = 1;
       break;
@@ -1592,7 +1588,7 @@ u32 calculate_score(afl_state_t *afl, struct queue_entry *q) {
 
       if (afl->max_raw_fitness == afl->min_raw_fitness) energy_factor = 1;
       else {
-        energy_exponent = q->weight * (1 - pow(afl->fitness_exponent, q->times_selected)) 
+        energy_exponent = q->seed_weight * (1 - pow(afl->fitness_exponent, q->times_selected)) 
                                   + 0.5 * pow(afl->fitness_exponent, q->times_selected);
         energy_factor = pow(2, afl->scale_exponent * (2 * energy_exponent - 1));
       }

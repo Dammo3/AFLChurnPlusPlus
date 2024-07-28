@@ -242,7 +242,7 @@ struct queue_entry {
 
   double raw_fitness,                   /* Non-normalised fitness of the seed as it is returned */
          alias_score,                   /* Used to calculate probability of choosing this seed */
-         weight;                        /* The fitness of the seed normalized between min and max raw fitness */
+         seed_weight;                        /* The fitness of the seed normalized between min and max raw fitness */
 
   u8 *byte_score;                       /* Possibility to mutate a certain byte, initial is INIT_BYTE_SCORE */
 

@@ -612,7 +612,7 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
   q->bitmap_size = count_bytes(afl, afl->fsrv.trace_bits);
   q->handicap = handicap;
   q->cal_failed = 0;
-  q->raw_fitness = get_raw_fitness_of_executed_input();
+  q->raw_fitness = get_raw_fitness_of_executed_input(afl);
 
   // anneal: update max and min path weight for all seeds
   if (afl->calibrated_paths == 0){
@@ -637,8 +637,8 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
 
   update_bitmap_score(afl, q);
 
-  if (re_cal_seed_fitness) update_seed_fitness();
-  else q->weight = normalize_fitness(q->raw_fitness);
+  if (re_cal_seed_fitness) update_seed_fitness(afl);
+  else q->seed_weight = normalize_fitness(afl, q->raw_fitness);
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user

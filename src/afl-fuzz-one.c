@@ -2301,7 +2301,7 @@ havoc_stage:
           snprintf(afl->m_tmp, sizeof(afl->m_tmp), " INTERESTING8_%u", item);
           strcat(afl->mutation, afl->m_tmp);
 #endif
-          out_buf[URfitnes(afl, temp_len)] = interesting_8[item];
+          out_buf[URfitness(afl, temp_len)] = interesting_8[item];
           break;
 
         }

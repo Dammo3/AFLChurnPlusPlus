@@ -579,7 +579,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
       case 'J':
         if (sscanf(optarg, "%u", &afl->scale_exponent) < 1) 
-              FATAL("Bad syntax used for -s");
+              FATAL("Bad syntax used for -J");
         break;
 
       case 'H':
@@ -2905,7 +2905,9 @@ int main(int argc, char **argv_orig, char **envp) {
             // table
             prev_queued_items = afl->queued_items;
             create_alias_table(afl);
-
+            if (likely(afl->alias_seed_selection)){
+              create_seed_alias_table(afl);
+            }
           }
 
           do {
@@ -2976,26 +2978,6 @@ int main(int argc, char **argv_orig, char **envp) {
         }
 
       }
-
-      if (likely(afl->alias_seed_selection)){
-        if (unlikely(prev_queued_alias < afl->queued_items)){
-          prev_queued_alias = afl->queued_items;
-          create_seed_alias_table(afl);
-        }
-
-        tmp_id = afl->current_entry = select_next_queue_entry(afl);
-        afl->queue_cur = afl->queue;
-        if (tmp_id < 99){
-          while (tmp_id--) afl->queue_cur = afl->queue_buf[afl->current_entry];
-        } else{
-          tmp_id++;
-          while (tmp_id >= 100){
-            afl->queue_cur = afl->queue_buf[afl->current_entry];
-            tmp_id -= 100; 
-          }
-          while (tmp_id--) afl->queue_cur = afl->queue_buf[afl->current_entry];
-        }
-    }
 
     } while (skipped_fuzz && afl->queue_cur && !afl->stop_soon);
 
