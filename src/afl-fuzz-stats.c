@@ -1150,7 +1150,7 @@ void show_stats_normal(afl_state_t *afl) {
 
   sprintf(tmp, "%.3f", afl->show_factor);
 
-  SAYF (bSTG bV bSTOP "aflchurn factor: " cRST "%-20s " bSTG bV "\n", tmp);
+  SAYF (bSTG bV bSTOP "aflchurn factor: " cRST "%-20s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 
