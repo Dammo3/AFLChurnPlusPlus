@@ -1142,13 +1142,9 @@ void show_stats_normal(afl_state_t *afl) {
 
   }
 
-  sprintf(tmp, "%s (%s%s saved)", u_stringify_int(IB(0), afl->total_tmouts),
-          u_stringify_int(IB(1), afl->saved_tmouts),
-          (afl->saved_tmouts >= KEEP_UNIQUE_HANG) ? "+" : "");
+  sprintf(tmp, "%.3f", afl->show_factor);
 
-  SAYF(bSTG bV bSTOP "  total tmouts : " cRST "%-20s" bSTG bV "\n", tmp);
-
-
+  SAYF (bSTG bV bSTOP "   raw fitness : " cRST "%-20s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 

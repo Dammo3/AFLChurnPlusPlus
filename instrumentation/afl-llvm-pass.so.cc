@@ -1804,6 +1804,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       }
 
       if (bb_raw_fitness_flag) {
+        OKF("Instrumented BB with raw fitness: %f", bb_raw_fitness);
         Constant *Weight = ConstantFP::get(DoubleTy, bb_raw_fitness);
         Constant *MapLoc = ConstantInt::get(Int32Ty, map_size);
         Constant *MapCntLoc = ConstantInt::get(Int32Ty, map_size + 8);
